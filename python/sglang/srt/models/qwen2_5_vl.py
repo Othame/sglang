@@ -21,6 +21,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import nvtx
 """Inference-only Qwen2-VL model compatible with HuggingFace weights."""
 import logging
 from functools import lru_cache, partial
@@ -503,7 +504,8 @@ class Qwen2_5_VLForConditionalGeneration(nn.Module):
         image_grid_thws = torch.concat([item.image_grid_thws for item in items], dim=0)
         assert pixel_values.dim() == 2, pixel_values.dim()
         assert image_grid_thws.dim() == 2, image_grid_thws.dim()
-        image_embeds = self.visual(pixel_values, grid_thw=image_grid_thws)
+        with nvtx.annotate("Qwen2_5_VisionTransformer", color="green"):
+            image_embeds = self.visual(pixel_values, grid_thw=image_grid_thws)
         return image_embeds
 
     def _process_video_input(self, video_input: Qwen2VLVideoInputs) -> torch.Tensor:
@@ -547,19 +549,20 @@ class Qwen2_5_VLForConditionalGeneration(nn.Module):
                     "multimodal section rotary embedding requires "
                     f"(3, seq_len) positions, but got {positions.size()}"
                 )
-
-        hidden_states = general_mm_embed_routine(
-            input_ids=input_ids,
-            forward_batch=forward_batch,
-            language_model=self.model,
-            image_data_embedding_func=self.get_image_feature,
-            positions=positions,
-        )
-
-        if not get_embedding:
-            return self.logits_processor(
-                input_ids, hidden_states, self.lm_head, forward_batch
+        with nvtx.annotate("general_mm_embed_routine", color = "blue"):
+            hidden_states = general_mm_embed_routine(
+                input_ids=input_ids,
+                forward_batch=forward_batch,
+                language_model=self.model,
+                image_data_embedding_func=self.get_image_feature,
+                positions=positions,
             )
+        
+        if not get_embedding:
+            with nvtx.annotate("logits_processor", color = "red"):
+                return self.logits_processor(
+                    input_ids, hidden_states, self.lm_head, forward_batch
+                )
         else:
             return self.pooler(hidden_states, forward_batch)
 

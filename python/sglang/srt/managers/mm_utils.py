@@ -1,6 +1,7 @@
 """
 Multi-modality utils
 """
+import nvtx
 
 import logging
 from abc import abstractmethod
@@ -135,7 +136,8 @@ def get_embedding_and_mask(
 
     """
     # 1. Get the embedding
-    embedding = data_embedding_func(embedding_items)
+    with nvtx.annotate("data_embedding_func:Qwen.get_image_feature", color = "green"):
+        embedding = data_embedding_func(embedding_items)
 
     # 2. Check the embedding
     if embedding.dim() == 2:
@@ -222,7 +224,8 @@ def embed_mm_inputs(
 
     if appearing_pad_values.numel() == 0:
         # all been prefixed
-        inputs_embeds = input_embedding(input_ids)
+        with nvtx.annotate("input_embedding", color = "yellow"):
+            inputs_embeds = input_embedding(input_ids)
     else:
         appearing_items = [
             item
@@ -249,19 +252,20 @@ def embed_mm_inputs(
             and image_data_embedding_func
         ):
             items = [item for item in appearing_items if item.is_image()]
-            embedding, mask = get_embedding_and_mask(
-                data_embedding_func=image_data_embedding_func,
-                embedding_items=items,
-                placeholder_tensor=(
-                    placeholder_tensor
-                    if using_all_items
-                    else torch.tensor(
-                        [item.pad_value for item in items],
-                        device=input_ids.device,
-                    )
-                ),
-                input_ids=input_ids,
-            )
+            with nvtx.annotate("image_get_embedding_and_mask", color = "green"):
+                embedding, mask = get_embedding_and_mask(
+                    data_embedding_func=image_data_embedding_func,
+                    embedding_items=items,
+                    placeholder_tensor=(
+                        placeholder_tensor
+                        if using_all_items
+                        else torch.tensor(
+                            [item.pad_value for item in items],
+                            device=input_ids.device,
+                        )
+                    ),
+                    input_ids=input_ids,
+                )
             embeddings += [embedding]
             masks += [mask]
 
@@ -271,19 +275,20 @@ def embed_mm_inputs(
             and audio_data_embedding_func
         ):
             items = [item for item in appearing_items if item.is_audio()]
-            embedding, mask = get_embedding_and_mask(
-                data_embedding_func=audio_data_embedding_func,
-                embedding_items=items,
-                placeholder_tensor=(
-                    placeholder_tensor
-                    if using_all_items
-                    else torch.tensor(
-                        [item.pad_value for item in items],
-                        device=input_ids.device,
-                    )
-                ),
-                input_ids=input_ids,
-            )
+            with nvtx.annotate("audio_get_embedding_and_mask", color = "green"):
+                embedding, mask = get_embedding_and_mask(
+                    data_embedding_func=audio_data_embedding_func,
+                    embedding_items=items,
+                    placeholder_tensor=(
+                        placeholder_tensor
+                        if using_all_items
+                        else torch.tensor(
+                            [item.pad_value for item in items],
+                            device=input_ids.device,
+                        )
+                    ),
+                    input_ids=input_ids,
+                )
             embeddings += [embedding]
             masks += [mask]
 
@@ -297,12 +302,13 @@ def embed_mm_inputs(
         inputs_embeds = input_embedding(input_ids)
 
         # 4. scatter embeddings into input embedding
-        for embedding, mask in zip(embeddings, masks):
-            mask = mask.expand_as(inputs_embeds).to(inputs_embeds.device)
-            inputs_embeds = inputs_embeds.masked_scatter(
-                mask,
-                embedding.to(inputs_embeds.device, inputs_embeds.dtype),
-            )
+        with nvtx.annotate("masked_scatter_embeddings", color = "red"):
+            for embedding, mask in zip(embeddings, masks):
+                mask = mask.expand_as(inputs_embeds).to(inputs_embeds.device)
+                inputs_embeds = inputs_embeds.masked_scatter(
+                    mask,
+                    embedding.to(inputs_embeds.device, inputs_embeds.dtype),
+                )
     return inputs_embeds
 
 
@@ -334,32 +340,36 @@ def general_mm_embed_routine(
     """
 
     assert hasattr(language_model, "get_input_embeddings")
-    embed_tokens = language_model.get_input_embeddings()
+    with nvtx.annotate("get_input_embeddings", color = "blue"):
+        embed_tokens = language_model.get_input_embeddings()
     if (
         not forward_batch.forward_mode.is_decode()
         and forward_batch.contains_mm_inputs()
     ):
         mm_input = forward_batch.merge_mm_inputs()
-        inputs_embeds = embed_mm_inputs(
-            mm_inputs=mm_input,
-            input_ids=input_ids,
-            input_embedding=embed_tokens,
-            image_data_embedding_func=image_data_embedding_func,
-            audio_data_embedding_func=audio_data_embedding_func,
-            placeholder_token_ids=placeholder_token_ids,
-        )
+        with nvtx.annotate("embed_mm_inputs", color = "orange"):
+            inputs_embeds = embed_mm_inputs(
+                mm_inputs=mm_input,
+                input_ids=input_ids,
+                input_embedding=embed_tokens,
+                image_data_embedding_func=image_data_embedding_func,
+                audio_data_embedding_func=audio_data_embedding_func,
+                placeholder_token_ids=placeholder_token_ids,
+            )
         # once used, mm_inputs is useless
         # just being defensive here
         forward_batch.mm_inputs = None
     else:
-        inputs_embeds = embed_tokens(input_ids)
+        with nvtx.annotate("embed_tokens", color = "cyan"):
+         inputs_embeds = embed_tokens(input_ids)
 
-    hidden_states = language_model(
-        input_ids=None,
-        forward_batch=forward_batch,
-        input_embeds=inputs_embeds,
-        **kwargs,
-    )
+    with nvtx.annotate("language_model", color = "blue"):
+        hidden_states = language_model(
+            input_ids=None,
+            forward_batch=forward_batch,
+            input_embeds=inputs_embeds,
+            **kwargs,
+        )
     return hidden_states
 
 
