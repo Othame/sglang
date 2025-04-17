@@ -164,13 +164,14 @@ class Qwen2_5_VisionBlock(nn.Module):
         position_embeddings: torch.Tensor,
     ) -> torch.Tensor:
         hidden_states = self.norm1(x)
-        hidden_states = rearrange(hidden_states, "s b ... -> b s ...")
-        attn = self.attn(
-            hidden_states,
-            cu_seqlens=cu_seqlens,
-            position_embeddings=position_embeddings,
-        )
-        attn = rearrange(attn, "b s ... -> s b ...")
+        with nvtx.annotate("Attention", color = "red"):
+            hidden_states = rearrange(hidden_states, "s b ... -> b s ...")
+            attn = self.attn(
+                hidden_states,
+                cu_seqlens=cu_seqlens,
+                position_embeddings=position_embeddings,
+            )
+            attn = rearrange(attn, "b s ... -> s b ...")
         x = x + attn
         norm2 = self.norm2(x)
         mlp = self.mlp(norm2)
@@ -369,59 +370,65 @@ class Qwen2_5_VisionTransformer(nn.Module):
         x: torch.Tensor,
         grid_thw: torch.Tensor,
     ) -> torch.Tensor:
-        # patchify
-        x = x.to(device=self.device, dtype=self.dtype)
-        x = self.patch_embed(x)
+        with nvtx.annotate("Patchify", color="red"):
+            # patchify
+            x = x.to(device=self.device, dtype=self.dtype)
+            x = self.patch_embed(x)
 
-        # compute position embedding
-        rotary_pos_emb = self.rot_pos_emb(grid_thw)
+        with nvtx.annotate("Position Embedding and Cu_Seqlens", color="blue"):
+            # compute position embedding
+            rotary_pos_emb = self.rot_pos_emb(grid_thw)
 
-        window_index, cu_window_seqlens = self.get_window_index(grid_thw)
-        cu_window_seqlens = torch.tensor(
-            cu_window_seqlens,
-            device=x.device,
-            dtype=torch.int32,
-        )
-        cu_window_seqlens = torch.unique_consecutive(cu_window_seqlens)
-
-        seq_len, _ = x.size()
-
-        x = x.reshape(seq_len // self.spatial_merge_unit, self.spatial_merge_unit, -1)
-        x = x[window_index, :, :]
-        x = x.reshape(seq_len, -1)
-        rotary_pos_emb = rotary_pos_emb.reshape(
-            seq_len // self.spatial_merge_unit, self.spatial_merge_unit, -1
-        )
-        rotary_pos_emb = rotary_pos_emb[window_index, :, :]
-        rotary_pos_emb = rotary_pos_emb.reshape(seq_len, -1)
-        emb = torch.cat((rotary_pos_emb, rotary_pos_emb), dim=-1)
-        position_embeddings = (emb.cos(), emb.sin())
-
-        # compute cu_seqlens
-        cu_seqlens = torch.cat(
-            [
-                torch.tensor([0], device=grid_thw.device),
-                (grid_thw[:, 0] * grid_thw[:, 1] * grid_thw[:, 2]).cumsum(dim=0),
-            ]
-        )
-        cu_seqlens = F.pad(cu_seqlens, (1, 0), "constant", 0)
-
-        # transformers
-        x = x.unsqueeze(1)
-        for layer_num, blk in enumerate(self.blocks):
-            if layer_num in self.fullatt_block_indexes:
-                cu_seqlens_now = cu_seqlens
-            else:
-                cu_seqlens_now = cu_window_seqlens
-            x = blk(
-                x, cu_seqlens=cu_seqlens_now, position_embeddings=position_embeddings
+            window_index, cu_window_seqlens = self.get_window_index(grid_thw)
+            cu_window_seqlens = torch.tensor(
+                cu_window_seqlens,
+                device=x.device,
+                dtype=torch.int32,
             )
+            cu_window_seqlens = torch.unique_consecutive(cu_window_seqlens)
 
-        # adapter
-        x = self.merger(x)
+            seq_len, _ = x.size()
 
-        reverse_indices = torch.argsort(window_index)
-        x = x[reverse_indices, :]
+            x = x.reshape(seq_len // self.spatial_merge_unit, self.spatial_merge_unit, -1)
+            x = x[window_index, :, :]
+            x = x.reshape(seq_len, -1)
+            rotary_pos_emb = rotary_pos_emb.reshape(
+                seq_len // self.spatial_merge_unit, self.spatial_merge_unit, -1
+            )
+            rotary_pos_emb = rotary_pos_emb[window_index, :, :]
+            rotary_pos_emb = rotary_pos_emb.reshape(seq_len, -1)
+            emb = torch.cat((rotary_pos_emb, rotary_pos_emb), dim=-1)
+            position_embeddings = (emb.cos(), emb.sin())
+
+            # compute cu_seqlens
+            cu_seqlens = torch.cat(
+                [
+                    torch.tensor([0], device=grid_thw.device),
+                    (grid_thw[:, 0] * grid_thw[:, 1] * grid_thw[:, 2]).cumsum(dim=0),
+                ]
+            )
+            cu_seqlens = F.pad(cu_seqlens, (1, 0), "constant", 0)
+        
+        with nvtx.annotate("Transformer Blocks", color="green"):
+
+            # transformers
+            x = x.unsqueeze(1)
+            for layer_num, blk in enumerate(self.blocks):
+                if layer_num in self.fullatt_block_indexes:
+                    cu_seqlens_now = cu_seqlens
+                else:
+                    cu_seqlens_now = cu_window_seqlens
+                x = blk(
+                    x, cu_seqlens=cu_seqlens_now, position_embeddings=position_embeddings
+                )
+        
+        with nvtx.annotate("Merging", color="yellow"):
+
+            # adapter
+            x = self.merger(x)
+
+            reverse_indices = torch.argsort(window_index)
+            x = x[reverse_indices, :]
 
         return x
 
