@@ -13,6 +13,7 @@ from sglang.srt.distributed import utils as dist_utils
 from sglang.srt.layers.attention.triton_ops.prefill_attention import (
     context_attention_fwd,
 )
+from sgl_kernel.flash_attn import flash_attn_varlen_func
 from sglang.srt.layers.linear import (
     ColumnParallelLinear,
     QKVParallelLinear,
@@ -362,5 +363,48 @@ class VisionTritonAttention(nn.Module):
             max_seqlen,
             is_causal=False,
         )
+
+        return output
+
+class VisionFlashAttention(nn.Module):
+    """
+    Implementation of Vision Version of FlashAttention without a causal mask.
+    """
+    def __init__(
+        self,
+    ):
+        super().__init__()
+    
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        _bsz: int,
+        cu_seqlens: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        r"""
+        Args:
+            cu_seqlens: [b]
+        Returns:
+             [b * s, h, head_size]
+        """
+
+        # [b * s, head, head_size]
+
+        seq_lens = cu_seqlens[1:] - cu_seqlens[:-1]
+        max_seqlen = seq_lens.max().item()
+
+        output = flash_attn_varlen_func(
+                        q=q,
+                        k=k,
+                        v=v,
+                        cu_seqlens_q=cu_seqlens,
+                        cu_seqlens_k=cu_seqlens,
+                        max_seqlen_q=max_seqlen,
+                        max_seqlen_k=max_seqlen,
+                        causal=False,
+                        return_softmax_lse=False,
+                    )
 
         return output

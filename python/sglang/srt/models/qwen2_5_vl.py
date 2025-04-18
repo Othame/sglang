@@ -263,7 +263,7 @@ class Qwen2_5_VisionTransformer(nn.Module):
                     num_heads=num_heads,
                     hidden_act=vision_config.hidden_act,
                     norm_layer=norm_layer,
-                    attn_implementation="sdpa",
+                    attn_implementation="sdpa", # ???
                     quant_config=quant_config,
                     prefix=add_prefix(f"blocks.{i}", prefix),
                 )
